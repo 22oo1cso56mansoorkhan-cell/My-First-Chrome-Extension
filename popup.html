@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cat Image Replacer</title>
+    <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+    <div class="popup-container">
+        <div class="header">
+            <div class="icon">
+                <span>🐱</span>
+            </div>
+            <h2>Cat Replacer</h2>
+        </div>
+        
+        <div class="status" id="status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Disabled</span>
+        </div>
+
+        <button class="toggle-btn" id="toggleBtn">
+            <span id="btnIcon">🐱</span>
+            <span id="btnText">Replace with Cats</span>
+        </button>
+
+        <div class="info">
+            <p>🐾 Replaces all images on the page with cute cats!</p>
+            <p class="stats" id="stats">Images replaced: 0</p>
+        </div>
+
+        <div class="footer">
+            <button class="reset-btn" id="resetBtn">↻ Reset Page</button>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>
