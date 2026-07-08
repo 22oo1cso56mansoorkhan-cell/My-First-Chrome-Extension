@@ -2,7 +2,10 @@
 (function() {
     let isEnabled = false;
     let originalImages = [];
-    
+    let observer = null;
+    let retryCount = 0;
+    const MAX_RETRIES = 5;
+
     // Fetch a random cat image from the API
     async function fetchCatImage() {
         try {
@@ -26,7 +29,7 @@
     // Fetch multiple cat images
     async function fetchCatImages(count) {
         const promises = [];
-        const maxBatch = 10; // Limit concurrent requests
+        const maxBatch = 15;
         
         for (let i = 0; i < Math.min(count, maxBatch); i++) {
             promises.push(fetchCatImage());
@@ -34,7 +37,6 @@
         
         try {
             const results = await Promise.all(promises);
-            // If we need more images, reuse the ones we have
             while (results.length < count) {
                 results.push(results[results.length % results.length]);
             }
@@ -45,16 +47,35 @@
         }
     }
 
-    // Replace all images on the page (including large ones)
+    // ✅ FUNCTION 1: Replace ALL <img> tags
     async function replaceImages() {
         // Get ALL images - including lazy-loaded ones
-        const images = document.querySelectorAll('img');
-        console.log(`Found ${images.length} images on page`);
+        let images = document.querySelectorAll('img');
         
-        // Also find background images and replace them
+        // Also check for images inside shadow DOM
+        document.querySelectorAll('*').forEach(el => {
+            if (el.shadowRoot) {
+                const shadowImgs = el.shadowRoot.querySelectorAll('img');
+                images = [...images, ...shadowImgs];
+            }
+        });
+        
+        console.log(`🐱 Found ${images.length} images on page`);
+        
+        // Replace background images
         replaceBackgroundImages();
         
+        // Replace images inside iframes (if allowed)
+        replaceIframeImages();
+        
         if (images.length === 0) {
+            // Try again after a delay (for lazy-loaded images)
+            if (retryCount < MAX_RETRIES) {
+                retryCount++;
+                console.log(`No images found, retrying (${retryCount}/${MAX_RETRIES})...`);
+                setTimeout(() => replaceImages(), 2000);
+                return;
+            }
             showNotification('No images found on this page! 🐱');
             return;
         }
@@ -70,10 +91,8 @@
             }));
         }
 
-        // Get cat images
         const catImageUrls = await fetchCatImages(images.length);
         
-        // Replace each image
         images.forEach((img, index) => {
             // Store original if not already stored
             if (!img.dataset.originalSrc) {
@@ -95,18 +114,22 @@
             
             // Force image to load
             img.loading = 'eager';
+            img.decoding = 'async';
             
             // Handle loading errors
             img.onerror = function() {
+                console.warn('Failed to load cat image, using fallback');
                 this.src = 'https://cataas.com/cat';
             };
             
             // Ensure image is visible
             img.style.display = img.style.display || '';
             img.style.visibility = img.style.visibility || '';
+            img.style.opacity = img.style.opacity || '1';
         });
 
         isEnabled = true;
+        retryCount = 0;
         chrome.storage.local.set({ catReplacerEnabled: true });
         
         chrome.runtime.sendMessage({ 
@@ -117,33 +140,65 @@
         showNotification(`🐱 ${images.length} images replaced with cats!`);
     }
 
-    // Replace background images (for large hero images)
+    // ✅ FUNCTION 2: Replace CSS background images
     function replaceBackgroundImages() {
         const elements = document.querySelectorAll('*');
         let bgCount = 0;
         
         elements.forEach(el => {
+            // Check all background-related properties
             const bg = window.getComputedStyle(el).backgroundImage;
+            const bgColor = window.getComputedStyle(el).backgroundColor;
+            
             if (bg && bg !== 'none' && bg.includes('url(')) {
                 // Store original background
                 if (!el.dataset.originalBg) {
                     el.dataset.originalBg = bg;
+                    el.dataset.originalBgColor = bgColor || '';
                 }
                 // Replace with cat image
                 const catUrl = 'https://cataas.com/cat?width=800&height=600';
                 el.style.backgroundImage = `url('${catUrl}')`;
                 el.style.backgroundSize = 'cover';
                 el.style.backgroundPosition = 'center';
+                el.style.backgroundRepeat = 'no-repeat';
                 bgCount++;
             }
         });
         
         if (bgCount > 0) {
-            console.log(`Replaced ${bgCount} background images`);
+            console.log(`🐱 Replaced ${bgCount} background images`);
         }
     }
 
-    // Restore original images
+    // ✅ FUNCTION 3: Replace images inside iframes
+    function replaceIframeImages() {
+        try {
+            const iframes = document.querySelectorAll('iframe');
+            iframes.forEach(iframe => {
+                try {
+                    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                    if (doc) {
+                        const imgs = doc.querySelectorAll('img');
+                        imgs.forEach(img => {
+                            if (!img.dataset.originalSrc) {
+                                img.dataset.originalSrc = img.src;
+                            }
+                            img.src = 'https://cataas.com/cat?width=200&height=200';
+                            img.classList.add('cat-replaced');
+                        });
+                    }
+                } catch (e) {
+                    // Cross-origin iframe - cannot access
+                    console.log('Cannot access iframe (cross-origin)');
+                }
+            });
+        } catch (e) {
+            console.log('Error processing iframes:', e);
+        }
+    }
+
+    // ✅ FUNCTION 4: Restore original images
     function restoreImages() {
         // Restore <img> tags
         const images = document.querySelectorAll('img.cat-replaced');
@@ -160,6 +215,7 @@
                 delete img.dataset.originalSrc;
                 delete img.dataset.originalSrcset;
                 delete img.dataset.originalSizes;
+                img.onerror = null;
             }
         });
         
@@ -168,13 +224,25 @@
         elements.forEach(el => {
             if (el.dataset.originalBg) {
                 el.style.backgroundImage = el.dataset.originalBg;
+                el.style.backgroundSize = '';
+                el.style.backgroundPosition = '';
+                el.style.backgroundRepeat = '';
                 delete el.dataset.originalBg;
+                delete el.dataset.originalBgColor;
             }
         });
         
         originalImages = [];
         isEnabled = false;
+        retryCount = 0;
         chrome.storage.local.set({ catReplacerEnabled: false });
+        
+        // Stop observer if it exists
+        if (observer) {
+            observer.disconnect();
+            observer = null;
+        }
+        
         showNotification('🐱 Cats removed! Images restored.');
     }
 
@@ -183,6 +251,8 @@
         if (isEnabled) {
             restoreImages();
         } else {
+            // Start observing before replacing
+            setupMutationObserver();
             replaceImages();
         }
     }
@@ -190,7 +260,12 @@
     // Show notification
     function showNotification(message) {
         try {
+            // Remove existing notification
+            const existing = document.querySelector('.cat-notification');
+            if (existing) existing.remove();
+            
             const notification = document.createElement('div');
+            notification.className = 'cat-notification';
             notification.style.cssText = `
                 position: fixed;
                 bottom: 20px;
@@ -205,6 +280,7 @@
                 box-shadow: 0 4px 12px rgba(0,0,0,0.3);
                 animation: slideIn 0.3s ease;
                 font-weight: 500;
+                max-width: 300px;
             `;
             notification.textContent = message;
             document.body.appendChild(notification);
@@ -218,6 +294,62 @@
         }
     }
 
+    // ✅ FUNCTION 5: Setup Mutation Observer for dynamic images
+    function setupMutationObserver() {
+        if (observer) {
+            observer.disconnect();
+        }
+        
+        observer = new MutationObserver((mutations) => {
+            if (!isEnabled) return;
+            
+            let hasNewImages = false;
+            let hasNewBgImages = false;
+            
+            mutations.forEach(mutation => {
+                // Check added nodes for new images
+                mutation.addedNodes.forEach(node => {
+                    if (node.nodeName === 'IMG') {
+                        hasNewImages = true;
+                    }
+                    if (node.querySelectorAll) {
+                        const imgs = node.querySelectorAll('img:not(.cat-replaced)');
+                        if (imgs.length > 0) hasNewImages = true;
+                    }
+                });
+                
+                // Check for attribute changes (lazy loading)
+                if (mutation.type === 'attributes' && 
+                    mutation.attributeName === 'src' && 
+                    mutation.target.nodeName === 'IMG' &&
+                    !mutation.target.classList.contains('cat-replaced')) {
+                    hasNewImages = true;
+                }
+            });
+            
+            if (hasNewImages) {
+                console.log('🔄 New images detected, replacing...');
+                clearTimeout(window._replaceTimeout);
+                window._replaceTimeout = setTimeout(() => {
+                    replaceImages();
+                }, 300);
+            }
+            
+            if (hasNewBgImages) {
+                replaceBackgroundImages();
+            }
+        });
+        
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['src', 'srcset', 'data-src', 'data-srcset']
+        });
+        
+        console.log('👀 Mutation observer set up for dynamic images');
+    }
+
     // Add styles
     const style = document.createElement('style');
     style.textContent = `
@@ -226,54 +358,25 @@
             to { transform: translateX(0); opacity: 1; }
         }
         img.cat-replaced {
-            border-radius: 8px;
-            transition: all 0.3s ease;
-            min-width: 50px;
-            min-height: 50px;
-            object-fit: cover;
+            border-radius: 8px !important;
+            transition: all 0.3s ease !important;
+            min-width: 20px !important;
+            min-height: 20px !important;
+            object-fit: cover !important;
+            background: #f0f0f0 !important;
         }
         img.cat-replaced:hover {
-            transform: scale(1.02);
-            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            transform: scale(1.02) !important;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2) !important;
         }
         [data-original-bg] {
-            transition: all 0.3s ease;
+            transition: all 0.3s ease !important;
         }
         [data-original-bg]:hover {
-            transform: scale(1.02);
+            transform: scale(1.02) !important;
         }
     `;
     document.head.appendChild(style);
-
-    // Observe for dynamically added images (lazy-loaded)
-    function setupMutationObserver() {
-        const observer = new MutationObserver((mutations) => {
-            if (!isEnabled) return;
-            
-            let newImages = false;
-            mutations.forEach(mutation => {
-                mutation.addedNodes.forEach(node => {
-                    if (node.nodeName === 'IMG') {
-                        newImages = true;
-                    }
-                    if (node.querySelectorAll) {
-                        const imgs = node.querySelectorAll('img:not(.cat-replaced)');
-                        if (imgs.length > 0) newImages = true;
-                    }
-                });
-            });
-            
-            if (newImages) {
-                console.log('New images detected, replacing...');
-                setTimeout(replaceImages, 500);
-            }
-        });
-        
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
-    }
 
     // Listen for messages from popup
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -289,12 +392,25 @@
     // Check storage for previous state
     chrome.storage.local.get(['catReplacerEnabled'], (result) => {
         if (result.catReplacerEnabled) {
-            setTimeout(() => replaceImages(), 1500);
+            console.log('🔄 Restoring previous cat mode state');
+            setTimeout(() => {
+                setupMutationObserver();
+                replaceImages();
+            }, 1500);
         }
     });
 
-    // Setup observer for lazy-loaded images
-    setupMutationObserver();
+    // Also run on page load complete
+    window.addEventListener('load', () => {
+        chrome.storage.local.get(['catReplacerEnabled'], (result) => {
+            if (result.catReplacerEnabled) {
+                setTimeout(() => {
+                    setupMutationObserver();
+                    replaceImages();
+                }, 1000);
+            }
+        });
+    });
 
-    console.log('🐱 Cat Image Replacer loaded! (Now handles large images too)');
+    console.log('🐱 Cat Image Replacer loaded! (Ultimate version - catches ALL images)');
 })();
